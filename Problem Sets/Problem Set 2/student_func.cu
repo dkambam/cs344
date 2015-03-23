@@ -101,6 +101,8 @@
 //****************************************************************************
 
 #include "utils.h"
+#define DEBUG_MODE false
+#define TEST_INDEX 1671
 
 __global__
 void gaussian_blur(const unsigned char* const inputChannel,
@@ -129,6 +131,46 @@ void gaussian_blur(const unsigned char* const inputChannel,
   // the value is out of bounds), you should explicitly clamp the neighbor values you read
   // to be within the bounds of the image. If this is not clear to you, then please refer
   // to sequential reference solution for the exact clamping semantics you should follow.
+
+  size_t index = blockIdx.x * blockDim.x + threadIdx.x;
+  // if(!(index < numRows * numCols)){ printf("ERROR: invalid index[%ld]. Exiting gaussian_blur().\n", index); return; }
+
+  // if(DEBUG_MODE && !(index == TEST_INDEX)) {return;} // test-code
+  // if(DEBUG_MODE) printf("in[%ld]: %u\n", index, inputChannel[index]); // test-code
+  
+
+  int curPixelRow = index / numCols;
+  int curPixelCol = index % numCols;
+
+  float outputPixelVal = 0.f;
+  for(int i=0; i<filterWidth; i++){
+    for(int j=0; j<filterWidth; j++){
+      int refPixelRow = curPixelRow + i - (filterWidth / 2);
+      int refPixelCol = curPixelCol + j - (filterWidth / 2);
+
+      // clamp pixel values
+      refPixelRow = min(max(0,refPixelRow),numRows-1);
+      refPixelCol = min(max(0,refPixelCol),numCols-1);        
+
+      size_t refPixelIndex = refPixelRow * numCols + refPixelCol;
+
+      // get weight
+      int filterIndex = i * filterWidth + j;
+      float weight = filter[filterIndex];
+
+      outputPixelVal += weight * inputChannel[refPixelIndex];
+      if(DEBUG_MODE && index == TEST_INDEX){;
+        // printf("%f * [(%d,%d):4%ld]%u%s", weight, refPixelRow, refPixelCol, refPixelIndex, inputChannel[refPixelIndex], j % filterWidth == (filterWidth-1)? "\n" : "\t\t");
+      }
+    }
+  }
+
+  outputChannel[index] = outputPixelVal;
+  if(DEBUG_MODE && index==TEST_INDEX){;
+    // printf("out[%ld]:%u\n", index, outputChannel[index]);
+  }
+  
+
 }
 
 //This kernel takes in an image represented as a uchar4 and splits
@@ -152,6 +194,19 @@ void separateChannels(const uchar4* const inputImageRGBA,
   // {
   //     return;
   // }
+
+  size_t index = blockIdx.x * blockDim.x + threadIdx.x;
+  if( blockIdx.x >= numRows || threadIdx.x >= numCols ) return;
+  
+  // if(DEBUG_MODE && index!=TEST_INDEX ) {return; } // test-code 
+  if(DEBUG_MODE && index==TEST_INDEX){;
+  // printf("[%ld]: %u\n", index, inputImageRGBA[index].x); // test-code
+  }
+
+  redChannel[index] = inputImageRGBA[index].x;
+  greenChannel[index] = inputImageRGBA[index].y;
+  blueChannel[index] = inputImageRGBA[index].z;
+
 }
 
 //This kernel takes in three color channels and recombines them
@@ -170,14 +225,17 @@ void recombineChannels(const unsigned char* const redChannel,
 
   const int thread_1D_pos = thread_2D_pos.y * numCols + thread_2D_pos.x;
 
-  //make sure we don't try and access memory outside the image
-  //by having any threads mapped there return early
-  if (thread_2D_pos.x >= numCols || thread_2D_pos.y >= numRows)
-    return;
+  // //make sure we don't try and access memory outside the image
+  // //by having any threads mapped there return early
+  // if (thread_2D_pos.x >= numCols || thread_2D_pos.y >= numRows)
+  //   return;
 
   unsigned char red   = redChannel[thread_1D_pos];
   unsigned char green = greenChannel[thread_1D_pos];
   unsigned char blue  = blueChannel[thread_1D_pos];
+
+  // if(thread_1D_pos == 1671){ printf("r:%u g:%u b:%u\n", red, green, blue);}
+  // printf("r:%u g:%u b:%u\n", red, green, blue);
 
   //Alpha should be 255 for no transparency
   uchar4 outputPixel = make_uchar4(red, green, blue, 255);
@@ -205,11 +263,14 @@ void allocateMemoryAndCopyToGPU(const size_t numRowsImage, const size_t numColsI
   //be sure to use checkCudaErrors like the above examples to
   //be able to tell if anything goes wrong
   //IMPORTANT: Notice that we pass a pointer to a pointer to cudaMalloc
+  size_t numBytesInFilter = sizeof(float) * filterWidth * filterWidth;
+  checkCudaErrors(cudaMalloc(&d_filter, numBytesInFilter));
 
   //TODO:
   //Copy the filter on the host (h_filter) to the memory you just allocated
   //on the GPU.  cudaMemcpy(dst, src, numBytes, cudaMemcpyHostToDevice);
   //Remember to use checkCudaErrors!
+  checkCudaErrors(cudaMemcpy(d_filter, h_filter, numBytesInFilter, cudaMemcpyHostToDevice));
 
 }
 
@@ -220,21 +281,26 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
                         unsigned char *d_blueBlurred,
                         const int filterWidth)
 {
+  // printf("numRows:%ld\t\t numCols:%ld\n", numRows, numCols);
   //TODO: Set reasonable block size (i.e., number of threads per block)
-  const dim3 blockSize;
+  const dim3 blockSize = dim3(numCols, 1, 1); // each block contains a row
 
   //TODO:
   //Compute correct grid size (i.e., number of blocks per kernel launch)
   //from the image size and and block size.
-  const dim3 gridSize;
+  const dim3 gridSize = dim3(numRows, 1, 1);
 
   //TODO: Launch a kernel for separating the RGBA image into different color channels
+  separateChannels<<< gridSize, blockSize >>>(d_inputImageRGBA, numRows, numCols, d_red, d_green, d_blue);
 
   // Call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
   //TODO: Call your convolution kernel here 3 times, once for each color channel.
+  gaussian_blur<<< gridSize, blockSize >>>(d_red, d_redBlurred, numRows, numCols, d_filter, filterWidth);
+  gaussian_blur<<< gridSize, blockSize >>>(d_green, d_greenBlurred, numRows, numCols, d_filter, filterWidth);
+  gaussian_blur<<< gridSize, blockSize >>>(d_blue, d_blueBlurred, numRows, numCols, d_filter, filterWidth);
 
   // Again, call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.
@@ -261,4 +327,5 @@ void cleanup() {
   checkCudaErrors(cudaFree(d_red));
   checkCudaErrors(cudaFree(d_green));
   checkCudaErrors(cudaFree(d_blue));
+  checkCudaErrors(cudaFree(d_filter));
 }

@@ -1,0 +1,5 @@
+- images are stored row-wise
+
+
+- why wont this work ?
+// if(DEBUG_MODE && (index!=TEST_INDEX || index!=2000) ) return; // debug-code
